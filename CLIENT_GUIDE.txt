@@ -1,0 +1,84 @@
+PLEASE READ THIS BEFORE RUNNING THE APP
+
+╔═══════════════════════════════════════════════════════════════╗
+║           VideoCrafter - Quick Start Guide                    ║
+╚═══════════════════════════════════════════════════════════════╝
+
+⚠️  IMPORTANT: Resource limits (--memory="4g") are MANDATORY!
+    Without them, the server WILL crash on manual highlighting!
+
+1. INSTALLATION (One-Time Setup)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Open PowerShell as Administrator and run:
+
+# Remove old version if exists
+docker rm -f videocrafter 2>$null
+
+# Pull the latest version
+docker pull waseemzahid48/videocrafter-app:latest
+
+# Run the app (Port 5001)
+docker run -d -p 5001:5000 --name videocrafter --memory="4g" --cpus="2.0" --restart unless-stopped waseemzahid48/videocrafter-app:latest
+
+
+2. ACCESS THE SERVER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Open browser and go to:  http://localhost:5001
+
+
+3. COMMON COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+View Logs (to see what's happening):
+  docker logs -f videocrafter
+
+Check if server is running:
+  docker ps --filter "name=videocrafter"
+
+Stop server:
+  docker stop videocrafter
+
+Start server:
+  docker start videocrafter
+
+Update to latest version:
+  docker rm -f videocrafter
+  docker pull waseemzahid48/videocrafter-app:latest
+  docker run -d -p 5001:5000 --name videocrafter --memory="4g" --cpus="2.0" --restart unless-stopped waseemzahid48/videocrafter-app:latest
+
+
+4. TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Problem: "Failed to fetch" error
+Solution: 
+  1. Check logs: docker logs --tail 50 videocrafter
+  2. Restart: docker restart videocrafter
+
+Problem: Server not responding
+Solution:
+  docker restart videocrafter
+
+Problem: Upload fails
+Solution:
+  1. File must be under 2GB
+  2. Check server is running: docker ps
+  3. Check logs: docker logs videocrafter
+
+Problem: Container keeps stopping
+Solution:
+  1. Check memory: docker stats videocrafter
+  2. View error: docker logs --tail 100 videocrafter
+
+
+5. SYSTEM REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Minimum:
+  - 8GB RAM (4GB allocated to Docker)
+  - 2 CPU cores
+  - 20GB free disk space
+
+Recommended:
+  - 16GB RAM
+  - 4 CPU cores
+  - 50GB free disk space

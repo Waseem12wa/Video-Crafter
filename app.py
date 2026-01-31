@@ -9,8 +9,6 @@ import logging
 import tempfile
 import time
 import zipfile
-import gc
-import traceback
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
@@ -55,7 +53,7 @@ from typing import List
 
 # Import subtitle processing functions from subtitle_design_1
 from subtitle_design_1 import (
-    build_subtitle_sentences_with_whisperx,
+    build_subtitle_sentences_from_lines,
     build_subtitle_sentences_from_dict,
     serialize_subtitle_sentences
 )
@@ -105,7 +103,6 @@ else:
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max file size
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['OUTPUT_FOLDER'] = 'outputs'
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching for large files
 
 # S3 Configuration
 S3_BUCKET_NAME = 's3videocrafter'
@@ -341,54 +338,6 @@ def test_route():
     return jsonify({'message': 'Server is working!', 'routes': ['upload-video', 'upload-video-with-txt']})
 
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint for monitoring."""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'upload_folder': app.config['UPLOAD_FOLDER'],
-        'output_folder': app.config['OUTPUT_FOLDER']
-    })
-
-
-@app.route('/debug-info')
-def debug_info():
-    """Debug endpoint to check server configuration."""
-    import psutil
-    import sys
-    
-    # Get memory info
-    memory = psutil.virtual_memory()
-    
-    # List files in critical directories
-    uploads = []
-    if os.path.exists(app.config['UPLOAD_FOLDER']):
-        uploads = os.listdir(app.config['UPLOAD_FOLDER'])[:20]  # Max 20 files
-    
-    clips = []
-    if os.path.exists('clips'):
-        clips = os.listdir('clips')[:20]
-    
-    return jsonify({
-        'server': {
-            'python_version': sys.version,
-            'working_directory': os.getcwd(),
-            'max_upload_size_mb': app.config['MAX_CONTENT_LENGTH'] / (1024*1024),
-        },
-        'memory': {
-            'total_gb': memory.total / (1024**3),
-            'available_gb': memory.available / (1024**3),
-            'percent_used': memory.percent
-        },
-        'files': {
-            'uploads': uploads,
-            'clips': clips,
-        },
-        'status': 'Server is running'
-    })
-
-
 @app.route('/upload-video', methods=['POST'])
 def upload_video():
     """Handle main video upload and generate transcript."""
@@ -543,10 +492,7 @@ def upload_video_with_txt():
         #
         # We intentionally DO NOT run Whisper/WhisperX here so the UI stays responsive.
         # Transcription + waveform alignment happens when the user clicks "Process video".
-        # Use robust WhisperX-based alignment system
-        # You must provide the audio path for WhisperX alignment
-        # Here, we assume video_path is the audio/video file to align with
-        transcript, subtitles = build_subtitle_sentences_with_whisperx(video_path, lines)
+        transcript, subtitles = build_subtitle_sentences_from_lines(lines)
 
         if not transcript:
             return jsonify({'error': 'Transcript file produced no words'}), 400
@@ -586,9 +532,8 @@ def upload_video_with_txt():
 @app.route('/upload-zip-mapping', methods=['POST'])
 def upload_zip_mapping():
     """
-    Handle uploading a Zip file containing clips or audio.
-    Extracts video to 'clips/' and audio to 'audio_files/' folder.
-    Returns the list of filenames (basename only).
+    Handle uploading a Zip file containing clips.
+    Extracts them to 'clips/' folder and returns the list of filenames.
     """
     log_request_context("UPLOAD_ZIP_MAPPING")
 
@@ -610,24 +555,15 @@ def upload_zip_mapping():
 
         extracted_files = []
         clips_dir = os.path.join(app.root_path, 'clips')
-        audio_dir = os.path.join(app.root_path, 'audio_files')
         os.makedirs(clips_dir, exist_ok=True)
-        os.makedirs(audio_dir, exist_ok=True)
-
-        # Allowed extensions
-        video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
-        audio_exts = {'.mp3', '.wav', '.aac', 'm4a', '.flac', '.ogg'}
 
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Filter for files only to avoid junk
+            # Filter for video files only to avoid junk
             file_list = [f for f in zip_ref.namelist() if not f.startswith('__MACOSX') and not f.startswith('.')]
             
             for member in file_list:
-                ext = os.path.splitext(member)[1].lower()
-                is_video = ext in video_exts
-                is_audio = ext in audio_exts
-
-                if not (is_video or is_audio):
+                # Basic check for video extensions
+                if not any(member.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm']):
                     continue
                 
                 # Extract file
@@ -637,18 +573,16 @@ def upload_zip_mapping():
                     continue
                     
                 safe_name = secure_filename(original_name)
-
-                # Route to correct folder
-                if is_video:
-                    target_path = os.path.join(clips_dir, safe_name)
-                else:
-                    target_path = os.path.join(audio_dir, safe_name)
+                target_path = os.path.join(clips_dir, safe_name)
                 
+                # Extract to specific path (ZipFile.extract extracts relative to CWD or path, 
+                # but we want to flatten simply to clips folder usually? 
+                # Or just extract normally. Let's read and write to control path perfectly.)
                 with zip_ref.open(member) as source, open(target_path, "wb") as target:
                     target.write(source.read())
                 
                 extracted_files.append(safe_name)
-                logger.info(f"[UPLOAD_ZIP] Extracted {safe_name} (Audio={is_audio})")
+                logger.info(f"[UPLOAD_ZIP] Extracted {safe_name}")
 
         # Cleanup zip
         os.remove(zip_path)
@@ -657,7 +591,7 @@ def upload_zip_mapping():
         return jsonify({
             'success': True,
             'files': extracted_files,
-            'message': f'Extracted {len(extracted_files)} files.'
+            'message': f'Extracted {len(extracted_files)} clips.'
         })
 
     except Exception as e:
@@ -723,15 +657,7 @@ def process_video():
     logger.info("=" * 80)
     
     try:
-        # Parse request data
-        try:
-            data = request.json
-            if not data:
-                logger.error("[PROCESS_VIDEO] No JSON data received")
-                return jsonify({'error': 'No data provided in request'}), 400
-        except Exception as json_error:
-            logger.error(f"[PROCESS_VIDEO] Failed to parse JSON: {json_error}")
-            return jsonify({'error': 'Invalid JSON data'}), 400
+        data = request.json
 
         video_path = data.get('video_path')
         highlights = data.get('highlights', [])
@@ -741,9 +667,9 @@ def process_video():
         render_subtitles = data.get('render_subtitles', True)
         rip_and_run = data.get('rip_and_run', False)
         
-        # Strict validation: Rip & Run ON + Render Subtitles ON → Throw error
-        if rip_and_run and render_subtitles:
-            return jsonify({'error': 'Invalid combination: Rip & Run cannot be used with Render Subtitles (Overlay).'}), 400
+        # Strict validation removed to allow hybrid mode (Subtitles everywhere + Rip & Run)
+        # if rip_and_run and render_subtitles:
+        #    return jsonify({'error': 'Invalid combination: Rip & Run cannot be used with Render Subtitles (Overlay).'}), 400
 
         def _safe_int(value):
             try:
@@ -751,53 +677,27 @@ def process_video():
             except (TypeError, ValueError):
                 return None
 
-        # Validate Transcript Quality & Handle User-Provided Transcripts
-        is_user_transcript_with_placeholder_times = False
-        user_provided_text = None
-        
+        # Validate Transcript Quality & Handle Dummy Transcripts
+        is_dummy_transcript = False
         if transcript and len(transcript) > 2:
             t0 = transcript[0].get('start_time', 0)
             t1 = transcript[1].get('start_time', 0)
-            # Check if this is a user-provided transcript with placeholder 0.5s intervals
             if abs((t1 - t0) - 0.5) < 0.001:
-                # Extract the text content
-                words = [t.get('word', '') for t in transcript]
-                user_provided_text = " ".join(words)
-                
-                # Only treat as dummy if text is generic/empty
-                # If text is substantial, it's a user-provided transcript with placeholder times
-                if len(words) > 20 and len(user_provided_text) > 100:
-                    is_user_transcript_with_placeholder_times = True
-                    logger.info(f"[PROCESS_VIDEO] User-provided transcript detected ({len(words)} words). Will align to audio waveform.")
-                else:
-                    logger.info("[PROCESS_VIDEO] Short/generic transcript detected. Will re-transcribe from audio.")
+                is_dummy_transcript = True
+                logger.info("[PROCESS_VIDEO] Detected DUMMY transcript (0.5s intervals). Forcing re-alignment.")
 
         backend_transcript = transcript
-        base_transcript_text = user_provided_text if is_user_transcript_with_placeholder_times else None
+        base_transcript_text = None
 
-        # For user transcripts: pass the text to WhisperX for fast alignment (not full transcription)
-        if is_user_transcript_with_placeholder_times:
-            # Don't set backend_transcript = None, keep it for hint purposes
-            # The render_project will use base_transcript_text to align
-            logger.info("[PROCESS_VIDEO] Will use WhisperX alignment (fast, ~10-20s) instead of full transcription.")
-            if rip_and_run:
-                logger.info("[PROCESS_VIDEO] Rip & Run mode: keeping highlight indices as hints during alignment.")
+        if is_dummy_transcript:
+            backend_transcript = None # Force re-transcription
+            words = [t.get('word', '') for t in transcript]
+            base_transcript_text = " ".join(words)
+            logger.info("[PROCESS_VIDEO] Stripping explicit indices from highlights to force phrase matching.")
             
         # Check video existence
-        if not video_path:
-            logger.error("[PROCESS_VIDEO] No video_path provided in request")
-            return jsonify({'error': 'Video path is required'}), 400
-            
-        logger.info(f"[PROCESS_VIDEO] Checking video path: {video_path}")
-        
-        if not os.path.exists(video_path):
-            logger.error(f"[PROCESS_VIDEO] Video file not found at: {video_path}")
-            # List available files for debugging
-            upload_dir = app.config['UPLOAD_FOLDER']
-            if os.path.exists(upload_dir):
-                available_files = os.listdir(upload_dir)
-                logger.error(f"[PROCESS_VIDEO] Available files in uploads: {available_files}")
-            return jsonify({'error': f'Video file not found: {video_path}'}), 400
+        if not video_path or not os.path.exists(video_path):
+             return jsonify({'error': 'Video file not found'}), 400
 
         # Sort highlights logic
         if isinstance(highlights, list) and highlights:
@@ -819,70 +719,45 @@ def process_video():
 
         # Build Highlight Assignments
         assignments = []
-        for i, h in enumerate(highlights):
+        for h in highlights:
             start_w = _safe_int(h.get('start_word'))
             end_w = _safe_int(h.get('end_word'))
             
-            # Validate clip path if provided
-            clip_path = h.get('clip_path')
-            if clip_path and not os.path.exists(clip_path):
-                logger.warning(f"[PROCESS_VIDEO] Highlight {i+1}: Clip file not found: {clip_path}")
-                # Don't fail, just log warning and continue without clip
-                clip_path = None
-            
             # If dummy transcript, invalidate indices to force phrase match
-            # Keep hint indices even for dummy transcripts; they'll be scaled to the
-            # ASR transcript for clip placement.
+            if is_dummy_transcript:
+                start_w = None
+                end_w = None
 
             assignments.append(HighlightAssignment(
                 phrase=h.get('phrase', ''),
-                clip_path=clip_path,
+                clip_path=h.get('clip_path'),
                 music_path=h.get('music_path'),
                 music_volume=float(h.get('music_volume', 1.0)),
                 occurrence=int(h.get('occurrence', 1) or 1),
                 start_word=start_w,
                 end_word=end_w
             ))
-        
-        keywords_to_log = []
-        for a in assignments:
-            keywords_to_log.append(f"({a.start_word}-{a.end_word}: {a.clip_path or a.music_path})")
-        logger.info(f"[PROCESS_VIDEO] Created {len(assignments)} highlight assignments: {', '.join(keywords_to_log)}")
 
         output_filename = f"output_{Path(video_path).stem}.mp4"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
 
         # Build Subtitle Sentences
         sentences = []
-        # Fix: define is_dummy_transcript for use below
-        is_dummy_transcript = False
-        if transcript and len(transcript) > 2:
-            t0 = transcript[0].get('start_time', 0)
-            t1 = transcript[1].get('start_time', 0)
-            if abs((t1 - t0) - 0.5) < 0.001:
-                words = [t.get('word', '') for t in transcript]
-                user_provided_text = " ".join(words)
-                if len(words) > 20 and len(user_provided_text) > 100:
-                    is_dummy_transcript = False
-                else:
-                    is_dummy_transcript = True
-        logger.info(f"[PROCESS_VIDEO] is_dummy_transcript: {is_dummy_transcript}")
-        logger.info(f"[PROCESS_VIDEO] highlights received: {len(highlights)}")
-        logger.info(f"[PROCESS_VIDEO] assignments created: {len(assignments)}")
         if subtitle_sentences:
-            # Use frontend sentences if we trust the transcript OR if we are re-aligning (dummy transcript)
-            trust_indices = not is_dummy_transcript
-            for s in subtitle_sentences:
-                if isinstance(s, dict):
-                    sentences.append(SubtitleSentence(
-                        text=s.get('text', ''),
-                        phrase=s.get('text', ''),
-                        occurrence=s.get('occurrence', 1),
-                        start_word=_safe_int(s.get('start_word')) if trust_indices else None,
-                        end_word=_safe_int(s.get('end_word')) if trust_indices else None,
-                    ))
-                elif isinstance(s, str):
-                    sentences.append(SubtitleSentence(text=s, phrase=s))
+             # Use frontend sentences if we trust the transcript OR if we are re-aligning (dummy transcript)
+             trust_indices = not is_dummy_transcript
+             
+             for s in subtitle_sentences:
+                 if isinstance(s, dict):
+                     sentences.append(SubtitleSentence(
+                         text=s.get('text', ''),
+                         phrase=s.get('text', ''),
+                         occurrence=s.get('occurrence', 1),
+                         start_word=_safe_int(s.get('start_word')) if trust_indices else None,
+                         end_word=_safe_int(s.get('end_word')) if trust_indices else None,
+                     ))
+                 elif isinstance(s, str):
+                      sentences.append(SubtitleSentence(text=s, phrase=s))
 
         # Get subtitle design based on user selection (default to 1)
         subtitle_design_number = data.get('subtitle_design_number', 1)
@@ -903,23 +778,10 @@ def process_video():
         )
         # Render the project with the existing transcript
         logger.info("[REQUEST] Starting render_project...")
-        logger.info(f"[REQUEST] Video path: {video_path}, Highlights: {len(assignments)}, Subtitles: {len(sentences)}")
         render_start = time.time()
-        
-        try:
-            render_project(config)
-        except Exception as render_error:
-            logger.error(f"[REQUEST] ✗ render_project FAILED: {str(render_error)}")
-            logger.error(traceback.format_exc())
-            # Force garbage collection to free memory
-            gc.collect()
-            raise Exception(f"Video processing failed: {str(render_error)}")
-        
+        render_project(config)
         render_duration = time.time() - render_start
         logger.info(f"[REQUEST] ✓ render_project completed in {render_duration:.2f}s")
-        
-        # Force garbage collection after heavy processing
-        gc.collect()
 
         # Create project JSON file
         logger.info("[REQUEST] Creating project JSON file...")
@@ -985,15 +847,7 @@ def process_video():
 
     except Exception:
         logger.exception("[REQUEST] Unhandled error while processing video")
-        logger.error(f"[REQUEST] Full traceback: {traceback.format_exc()}")
-        
-        # Force cleanup to prevent memory leaks
-        gc.collect()
-        
-        return jsonify({
-            'error': 'Error processing video. Please check server logs or try again.',
-            'details': 'Server encountered an error during processing'
-        }), 500
+        return jsonify({'error': 'Error processing video'}), 500
 
 
 @app.route('/download/<filename>')
@@ -1273,11 +1127,4 @@ if __name__ == '__main__':
     # Disable reloader to prevent server restarts during video processing
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting app on port {port}...")
-    logger.info("=== Server Configuration ===")
-    logger.info(f"Max Upload Size: {app.config['MAX_CONTENT_LENGTH'] / (1024*1024*1024):.2f} GB")
-    logger.info(f"Upload Folder: {app.config['UPLOAD_FOLDER']}")
-    logger.info(f"Output Folder: {app.config['OUTPUT_FOLDER']}")
-    logger.info("===========================")
-    
-    # Use threaded mode for better request handling
-    app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False, threaded=True)
+    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)

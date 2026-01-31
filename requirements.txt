@@ -35,4 +35,5 @@ torch==2.5.1
 torchaudio==2.5.1
 whisperx==3.4.3
 gunicorn==21.2.0
-psutil==5.9.8
+
+

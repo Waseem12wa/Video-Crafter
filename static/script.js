@@ -246,163 +246,43 @@ function toggleSelectAll(checkbox, type) {
   const container = type === 'video' ? document.getElementById('video-asset-list') : document.getElementById('audio-asset-list');
   const checkboxes = container.querySelectorAll('.asset-checkbox');
   checkboxes.forEach(cb => cb.checked = checkbox.checked);
-  updateBulkActionState();
+  updateBulkDeleteState();
 }
 
-// Logic for Bulk Actions (Add / Delete)
-const bulkAddBtn = document.getElementById("bulk-add-btn");
-const bulkDeleteBtn = document.getElementById("bulk-delete-btn");
-
-function updateBulkActionState() {
-  const currentTab = document.querySelector(".clip-tab-btn.active").dataset.tab;
-  const listId = currentTab === "video" ? "video-asset-list" : "audio-asset-list";
-  const checkboxes = document.querySelectorAll(`#${listId} input[type="checkbox"]:checked`);
-
-  const count = checkboxes.length;
-  if (count > 0) {
-    bulkDeleteBtn.style.display = "inline-block";
-    bulkDeleteBtn.innerHTML = `🗑 Delete Selected (${count})`;
-
-    bulkAddBtn.style.display = "inline-block";
-    bulkAddBtn.innerHTML = `➕ Add Selected to Timeline (${count})`;
-  } else {
-    bulkDeleteBtn.style.display = "none";
-    bulkAddBtn.style.display = "none";
-  }
-}
-
-async function bulkAddAssets() {
-  const currentTab = document.querySelector(".clip-tab-btn.active").dataset.tab;
-  const listId = currentTab === "video" ? "video-asset-list" : "audio-asset-list";
-  const checkboxes = document.querySelectorAll(`#${listId} input[type="checkbox"]:checked`);
-
-  if (checkboxes.length === 0) return;
-
-  // Build a custom mapping list based on filenames
-  // We want to match the filename (without extension) to words in the transcript
-  const customMapping = [];
-
-  checkboxes.forEach(cb => {
-    const fullPath = cb.value; // e.g. "clips/foo.mp4"
-    const fileName = fullPath.split('/').pop(); // "foo.mp4"
-
-    // Use helper to strip extension for the "segment" search
-    const nameNoExt = fileName.replace(/\.[^/.]+$/, "");
-
-    // We pass the full path as the "clip", and the cleaned name as the "segment"
-    // The applyAutoHighlightsFromMapping function will do the fuzzy matching
-    customMapping.push({
-      segment: nameNoExt,
-      clip: fullPath,
-      is_audio: (currentTab === "audio")
-    });
-  });
-
-  const confirmMsg = `Auto-match ${customMapping.length} selected assets to the transcript?\n\nThis will search for words matching the filenames (e.g. "${customMapping[0].segment}") and add them as highlights.`;
-
-  if (confirm(confirmMsg)) {
-    applyAutoHighlightsFromMapping(customMapping);
-
-    // Uncheck all after adding
-    checkboxes.forEach(cb => cb.checked = false);
-    updateBulkActionState();
+function updateBulkDeleteState() {
+  const allCheckboxes = document.querySelectorAll('.asset-checkbox:checked');
+  const bulkBtn = document.getElementById('bulk-delete-btn');
+  if (bulkBtn) {
+    bulkBtn.style.display = allCheckboxes.length > 0 ? 'inline-block' : 'none';
+    bulkBtn.innerText = `🗑 Delete Selected (${allCheckboxes.length})`;
   }
 }
 
 async function bulkDeleteAssets() {
-  const currentTab = document.querySelector(".clip-tab-btn.active").dataset.tab;
-  const listId = currentTab === "video" ? "video-asset-list" : "audio-asset-list";
-  const checkboxes = document.querySelectorAll(`#${listId} input[type="checkbox"]:checked`);
+  const checked = document.querySelectorAll('.asset-checkbox:checked');
+  if (checked.length === 0) return;
 
-  if (checkboxes.length === 0) return;
+  if (!confirm(`Are you sure you want to delete ${checked.length} assets?`)) return;
 
-  if (!confirm(`Are you sure you want to delete ${checkboxes.length} assets? This cannot be undone.`)) {
-    return;
+  // Determine type based on active tab (assuming mostly one type selected or just mix)
+  // Actually, we should probably delete by dataset. For simplicity, let's assume current tab.
+  const type = currentTab;
+
+  for (const cb of checked) {
+    const filename = cb.getAttribute('data-filename');
+    await fetch(`/api/assets/${type}/${filename}`, { method: "DELETE" });
   }
 
-  // ... (rest of deletion logic)
-  const filesToDelete = Array.from(checkboxes).map(cb => cb.value);
-
-  try {
-    // We'll delete them one by one or add a bulk delete endpoint. 
-    // For now, let's reuse the single delete logic or just loop it.
-    // Ideally backend should have bulk delete, but let's loop for simplicity
-    // and update UI once.
-
-    for (const filePath of filesToDelete) {
-      await fetch("/delete-asset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_path: filePath })
-      });
-    }
-
-    // Refresh
-    loadAssetLibrary();
-
-  } catch (e) {
-    alert("Error deleting assets: " + e.message);
-  }
+  loadAssetLibrary();
+  if (document.getElementById('bulk-delete-btn')) document.getElementById('bulk-delete-btn').style.display = 'none';
 }
-
-// Attach listeners
-if (bulkAddBtn) bulkAddBtn.addEventListener("click", bulkAddAssets);
-if (bulkDeleteBtn) bulkDeleteBtn.addEventListener("click", bulkDeleteAssets);
-
-// Update renderAssetList to attach change listeners to checkboxes
-// The change to renderAssetList was already made above, adding `value="${file.path}"` and `onchange="updateBulkActionState()"`
-// This comment block is just for clarity, no further code change needed here.
-/*
-function renderAssetList(container, fileList, type) {
-  // ... existing logic ...
-  fileList.forEach((file) => {
-    // ...
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-        <td><input type="checkbox" class="asset-checkbox" data-filename="${file.name}" value="${file.path}" onchange="updateBulkActionState()"></td>
-        // ...
-    `;
-    tbody.appendChild(tr);
-  });
-  // ...
-}
-*/
-
-// Old bulk delete state update and listener removed
-// function updateBulkDeleteState() {
-//   const allCheckboxes = document.querySelectorAll('.asset-checkbox:checked');
-//   const bulkBtn = document.getElementById('bulk-delete-btn');
-//   if (bulkBtn) {
-//     bulkBtn.style.display = allCheckboxes.length > 0 ? 'inline-block' : 'none';
-//     bulkBtn.innerText = `🗑 Delete Selected (${allCheckboxes.length})`;
-//   }
-// }
-
-// async function bulkDeleteAssets() {
-//   const checked = document.querySelectorAll('.asset-checkbox:checked');
-//   if (checked.length === 0) return;
-
-//   if (!confirm(`Are you sure you want to delete ${checked.length} assets?`)) return;
-
-//   // Determine type based on active tab (assuming mostly one type selected or just mix)
-//   // Actually, we should probably delete by dataset. For simplicity, let's assume current tab.
-//   const type = currentTab;
-
-//   for (const cb of checked) {
-//     const filename = cb.getAttribute('data-filename');
-//     await fetch(`/api/assets/${type}/${filename}`, { method: "DELETE" });
-//   }
-
-//   loadAssetLibrary();
-//   if (document.getElementById('bulk-delete-btn')) document.getElementById('bulk-delete-btn').style.display = 'none';
-// }
 
 // Add event listener for bulk delete if not present
-// const bulkBtn = document.getElementById('bulk-delete-btn');
-// if (bulkBtn) {
-//   // frequent re-renders might duplicate listeners so prefer inline or check
-//   bulkBtn.onclick = bulkDeleteAssets;
-// }
+const bulkBtn = document.getElementById('bulk-delete-btn');
+if (bulkBtn) {
+  // frequent re-renders might duplicate listeners so prefer inline or check
+  bulkBtn.onclick = bulkDeleteAssets;
+}
 
 function filterAssets(query) {
   const q = query.toLowerCase();
@@ -414,7 +294,6 @@ function filterAssets(query) {
 
   const filtered = targetData.filter(f => f.name.toLowerCase().includes(q));
   renderAssetList(targetContainer, filtered, currentTab);
-  updateBulkActionState(); // Update bulk action buttons visibility after filtering
 }
 
 function updateDropdownModules(data) {
@@ -740,184 +619,15 @@ function handleMappingSelection(e) {
 
 // Helper: normalize a full segment from the mapping file
 // Uses the same token logic as normalizeWordToken so mapping and transcript align.
-const NUM_WORD_TO_DIGIT = {
-  zero: "0",
-  oh: "0",
-  o: "0",
-  one: "1",
-  two: "2",
-  three: "3",
-  four: "4",
-  five: "5",
-  six: "6",
-  seven: "7",
-  eight: "8",
-  nine: "9",
-  ten: "10",
-  eleven: "11",
-  twelve: "12",
-  thirteen: "13",
-  fourteen: "14",
-  fifteen: "15",
-  sixteen: "16",
-  seventeen: "17",
-  eighteen: "18",
-  nineteen: "19",
-  twenty: "20",
-  thirty: "30",
-  forty: "40",
-  fifty: "50",
-  sixty: "60",
-  seventy: "70",
-  eighty: "80",
-  ninety: "90",
-};
-
-const CONTRACTION_EXPANSIONS = {
-  im: ["i", "am"],
-  ive: ["i", "have"],
-  id: ["i", "would"],
-  youre: ["you", "are"],
-  youve: ["you", "have"],
-  theyre: ["they", "are"],
-  theyve: ["they", "have"],
-  weve: ["we", "have"],
-  cant: ["can", "not"],
-  cannot: ["can", "not"],
-  wont: ["will", "not"],
-  dont: ["do", "not"],
-  doesnt: ["does", "not"],
-  didnt: ["did", "not"],
-  isnt: ["is", "not"],
-  arent: ["are", "not"],
-  wasnt: ["was", "not"],
-  werent: ["were", "not"],
-  havent: ["have", "not"],
-  hasnt: ["has", "not"],
-  hadnt: ["had", "not"],
-  shouldnt: ["should", "not"],
-  wouldnt: ["would", "not"],
-  couldnt: ["could", "not"],
-  mustnt: ["must", "not"],
-};
-
-function normalizeTokenBase(token) {
-  if (!token) return "";
-  return token
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/[^a-z0-9]+/gi, "");
-}
-
-function expandNormalizedToken(token) {
-  if (!token) return [];
-  const expanded = CONTRACTION_EXPANSIONS[token] || [token];
-  return expanded.map((t) => NUM_WORD_TO_DIGIT[t] || t);
-}
-
-function normalizeTextToTokens(text) {
-  if (!text) return [];
+function normalizeSegment(text) {
+  if (!text) return "";
   return text
     .replace("\ufeff", "")
     .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/[^a-z0-9]+/gi, " ")
-    .trim()
     .split(/\s+/)
-    .flatMap((token) => expandNormalizedToken(normalizeTokenBase(token)))
-    .filter(Boolean);
-}
-
-function levenshteinDistance(a, b) {
-  if (a === b) return 0;
-  const alen = a.length;
-  const blen = b.length;
-  if (alen === 0) return blen;
-  if (blen === 0) return alen;
-  const dp = new Array(blen + 1);
-  for (let j = 0; j <= blen; j++) dp[j] = j;
-  for (let i = 1; i <= alen; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= blen; j++) {
-      const temp = dp[j];
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost);
-      prev = temp;
-    }
-  }
-  return dp[blen];
-}
-
-function tokensSimilar(a, b) {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  if (a.length >= 5 || b.length >= 5) {
-    const dist = levenshteinDistance(a, b);
-    if (dist <= 1) return true;
-    if (Math.max(a.length, b.length) >= 7 && dist <= 2) return true;
-    const maxLen = Math.max(a.length, b.length);
-    if (maxLen > 0 && (1 - dist / maxLen) >= 0.84) return true;
-  }
-  return false;
-}
-
-function findTokenSpan(searchTokens, transcriptDocs) {
-  const segLen = searchTokens.length;
-  if (!segLen) return null;
-  const allowedMismatches = segLen >= 10 ? 2 : segLen >= 6 ? 1 : 0;
-  for (let i = 0; i <= transcriptDocs.length - segLen; i++) {
-    let mismatches = 0;
-    // anchor first/last tokens to avoid drift
-    if (!tokensSimilar(transcriptDocs[i].word, searchTokens[0])) continue;
-    if (!tokensSimilar(transcriptDocs[i + segLen - 1].word, searchTokens[segLen - 1])) continue;
-
-    for (let j = 0; j < segLen; j++) {
-      if (!tokensSimilar(transcriptDocs[i + j].word, searchTokens[j])) {
-        mismatches++;
-        if (mismatches > allowedMismatches) break;
-      }
-    }
-    if (mismatches <= allowedMismatches) {
-      return { startIndex: i, endIndex: i + segLen - 1 };
-    }
-  }
-  // Fallback: anchor start/end tokens and allow variable middle
-  const anchorSize = segLen >= 6 ? 3 : segLen >= 3 ? 2 : 1;
-  if (anchorSize > 0 && segLen >= anchorSize * 2) {
-    // find start anchor
-    for (let i = 0; i <= transcriptDocs.length - anchorSize; i++) {
-      let okStart = true;
-      for (let j = 0; j < anchorSize; j++) {
-        if (!tokensSimilar(transcriptDocs[i + j].word, searchTokens[j])) {
-          okStart = false;
-          break;
-        }
-      }
-      if (!okStart) continue;
-
-      // find end anchor after start
-      const endAnchorStart = segLen - anchorSize;
-      for (let k = i + anchorSize; k <= transcriptDocs.length - anchorSize; k++) {
-        let okEnd = true;
-        for (let j = 0; j < anchorSize; j++) {
-          if (!tokensSimilar(transcriptDocs[k + j].word, searchTokens[endAnchorStart + j])) {
-            okEnd = false;
-            break;
-          }
-        }
-        if (okEnd && k >= i) {
-          return { startIndex: i, endIndex: k + anchorSize - 1 };
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function normalizeSegment(text) {
-  if (!text) return "";
-  return normalizeTextToTokens(text).join(" ");
+    .map((token) => normalizeWordToken(token))
+    .filter(Boolean)
+    .join(" ");
 }
 
 
@@ -935,14 +645,20 @@ function enhanceMappingWithRobustIndices() {
   // Just run it for all to be safe? Unlikely to hurt.
 
   // 1. Build strict map from transcript
-  const normalize = (text) => normalizeTextToTokens(text).join(" ");
+  const normalize = (text) => {
+    return text.toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
 
   let transcriptWordsNorm = [];
   transcriptData.forEach((item, index) => {
-    const tokens = normalizeTextToTokens(item.word);
-    tokens.forEach((token) => {
-      transcriptWordsNorm.push({ word: token, index: index });
-    });
+    const norm = normalize(item.word);
+    if (norm) {
+      transcriptWordsNorm.push({ word: norm, index: index });
+    }
   });
 
   let fullTranscriptNormString = "";
@@ -997,23 +713,12 @@ function enhanceMappingWithRobustIndices() {
           entry.start_index = startWordIndex;
           entry.end_index = endWordIndex;
           updatedCount++;
-          return;
+        } else {
+          console.warn(`[Robust] Found phrase but failed to map to word indices. Char indices: ${matchIdx} to ${matchIdx + searchPhrase.length - 1}`);
         }
+      } else {
+        console.log(`[Robust] Phrase NOT found in transcript: "${searchPhrase}"`);
       }
-
-      // Fuzzy token fallback (handles small typos like Dainely/Dainley)
-      const searchTokens = normalizeTextToTokens(searchPhrase);
-      if (searchTokens.length) {
-        const span = findTokenSpan(searchTokens, transcriptWordsNorm);
-        if (span) {
-          entry.start_index = transcriptWordsNorm[span.startIndex].index;
-          entry.end_index = transcriptWordsNorm[span.endIndex].index;
-          updatedCount++;
-          return;
-        }
-      }
-
-      console.log(`[Robust] Phrase NOT found in transcript: "${searchPhrase}"`);
     }
   });
 
@@ -1032,55 +737,36 @@ function enhanceMappingWithRobustIndices() {
 // Helper: normalize a single word token from transcriptData
 function normalizeWordToken(token) {
   if (!token) return "";
-  const base = normalizeTokenBase(token);
-  return NUM_WORD_TO_DIGIT[base] || base;
+  return token
+    .toLowerCase()
+    // strip non-alphanumerics
+    .replace(/[^a-z0-9]+/gi, "");
 }
 
-// 2. Auto Highlights from Mapping (or generic list)
-function applyAutoHighlightsFromMapping(customMappingData = null) {
-  const dataToUse = customMappingData || mappingData;
-
-  if (!dataToUse || dataToUse.length === 0) {
-    alert("No mapping data found.");
-    return;
-  }
-
-  if (!transcriptData || transcriptData.length === 0) {
-    alert("Please upload a transcript/video first.");
-    return;
-  }
-
-  // Save state before processing
-  saveState();
+// Use mapping to auto-create highlight segments (word-level search across transcript)
+function applyAutoHighlightsFromMapping() {
+  // console.log("Starting auto-highlight...");
+  if (!mappingData || !mappingData.length) return;
+  if (!transcriptData || !transcriptData.length) return;
 
   // 2026-01-13 Fix: Enhance mapping with robust indices now that we surely have transcriptData
   try {
-    // If using custom mapping, we need to temporarily set mappingData to it for enhanceMappingWithRobustIndices
-    // Or, modify enhanceMappingWithRobustIndices to accept a parameter.
-    // For now, let's pass it directly if it's a custom one.
-    if (customMappingData) {
-      // Temporarily override mappingData for robust indexing
-      const originalMappingData = mappingData;
-      mappingData = customMappingData;
-      enhanceMappingWithRobustIndices();
-      mappingData = originalMappingData; // Restore original
-    } else {
-      enhanceMappingWithRobustIndices();
-    }
+    enhanceMappingWithRobustIndices();
+    // alert("Step 1: Robust Indices Enhanced");
 
     // Normalize entire transcript into tokens, keeping track of original indices
     const transcriptDocs = [];
     transcriptData.forEach((w, index) => {
-      const tokens = normalizeTextToTokens(w.word);
-      tokens.forEach((token) => {
+      const token = normalizeWordToken(w.word);
+      if (token && token.length > 0) {
         transcriptDocs.push({ token: token, index: index });
-      });
+      }
     });
-    // Process each mapping entry
+    // alert("Step 2: Transcript Normalized (Docs: " + transcriptDocs.length + ")");
+
     let addedCount = 0;
 
-    // Use dataToUse instead of mappingData
-    dataToUse.forEach((entry) => {
+    mappingData.forEach((entry) => {
       const rawSegment = entry.segment || "";
       const clipSpec = entry.clip;
 
@@ -1110,11 +796,20 @@ function applyAutoHighlightsFromMapping(customMappingData = null) {
 
         console.log(`[Apply] Fallback search for "${normalized}" (${segLen} tokens)`);
 
-        const span = findTokenSpan(segmentTokens, transcriptDocs.map((d) => ({ word: d.token, index: d.index })));
-        if (span) {
-          startIndex = transcriptDocs[span.startIndex].index;
-          endIndex = transcriptDocs[span.endIndex].index;
+        // Sliding-window match over the FILTERED transcript
+        outer: for (let i = 0; i <= transcriptDocs.length - segLen; i++) {
+          // match check
+          for (let j = 0; j < segLen; j++) {
+            if (transcriptDocs[i + j].token !== segmentTokens[j]) {
+              continue outer;
+            }
+          }
+          // Found match!
+          startIndex = transcriptDocs[i].index;
+          // Calculate endIndex using the stored index from transcriptDocs
+          endIndex = transcriptDocs[i + segLen - 1].index;
           console.log(`[Apply] Loop match found for '${rawSegment}' at indices ${startIndex}-${endIndex}`);
+          break;
         }
       }
 
@@ -1140,90 +835,51 @@ function applyAutoHighlightsFromMapping(customMappingData = null) {
       // Derive clip path from clipSpec
       let clipPath = null;
 
-      let isAudio = false;
-      if (typeof clipSpec === "string") {
-        const lower = clipSpec.toLowerCase();
-        if (lower.startsWith("audio_files/") || /\.(mp3|wav|aac|m4a|flac|ogg)$/.test(lower)) {
-          isAudio = true;
-        }
-      }
+      if (typeof clipSpec === "number") {
+        clipPath = `clips/${clipSpec}.mp4`;
+      } else if (typeof clipSpec === "string") {
+        // Clean up the spec
+        let cleanSpec = clipSpec.trim();
 
-      // Check if the mapping entry explicitly flagged it (from Zip handler)
-      if (entry.is_audio) isAudio = true;
+        // 1. Check if it matches a known video name exactly or partially
+        // We assume allAssets.videos is populated (from loadAssetLibrary)
+        if (typeof allAssets !== 'undefined' && allAssets.videos) {
+          const match = allAssets.videos.find(v => {
+            const vNameOf = v.name.toLowerCase();
+            const specOf = cleanSpec.toLowerCase();
+            // Match exact name, or name without extension, or startswith
+            return vNameOf === specOf ||
+              vNameOf === specOf + ".mp4" ||
+              vNameOf.replace(/\.[^/.]+$/, "") === specOf;
+          });
 
-      if (!isAudio) {
-        // VIDEO LOGIC
-        if (typeof clipSpec === "number") {
-          clipPath = `clips/${clipSpec}.mp4`;
-        } else if (typeof clipSpec === "string") {
-          // Clean up the spec
-          let cleanSpec = clipSpec.trim();
-
-          // 1. Check if it matches a known video name exactly or partially
-          // We assume allAssets.videos is populated (from loadAssetLibrary)
-          if (typeof allAssets !== 'undefined' && allAssets.videos) {
-            const match = allAssets.videos.find(v => {
-              const vNameOf = v.name.toLowerCase();
-              const specOf = cleanSpec.toLowerCase();
-              // Match exact name, or name without extension, or startswith
-              return vNameOf === specOf ||
-                vNameOf === specOf + ".mp4" ||
-                vNameOf.replace(/\.[^/.]+$/, "") === specOf;
-            });
-
-            if (match) {
-              clipPath = match.path;
-            }
-          }
-
-          // 2. Fallback if no match found (or assets not loaded yet)
-          if (!clipPath) {
-            if (cleanSpec.startsWith("clips/") || cleanSpec.endsWith(".mp4")) {
-              clipPath = cleanSpec;
-            } else {
-              clipPath = `clips/${cleanSpec}.mp4`; // Assume mp4 extension if missing
-            }
+          if (match) {
+            clipPath = match.path;
           }
         }
 
-        const highlight = {
-          phrase,
-          start_word: startIndex,
-          end_word: correctEndIndex,
-          clip_path: clipPath,
-          music_path: null,
-          music_volume: 1.0,
-          occurrence: 1,
-        };
-
-        highlights.push(highlight);
-        addedCount++;
-
-      } else {
-        // AUDIO LOGIC
-        let musicPath = clipSpec;
-        // Simple cleanup/validation if needed
-        if (typeof musicPath === 'string' && !musicPath.includes('/')) {
-          // If it's just a filename "foo.mp3", assume audio_files/
-          musicPath = "audio_files/" + musicPath;
-        }
-
-        const musicHighlight = {
-          phrase: phrase,
-          start_word: startIndex,
-          end_word: correctEndIndex,
-          music_path: musicPath,
-          music_volume: 1.0, // Default volume
-          occurrence: 1,
-        };
-
-        if (typeof musicHighlights === 'undefined') {
-          console.error("musicHighlights array is missing!");
-        } else {
-          musicHighlights.push(musicHighlight);
-          addedCount++;
+        // 2. Fallback if no match found (or assets not loaded yet)
+        if (!clipPath) {
+          if (cleanSpec.startsWith("clips/") || cleanSpec.endsWith(".mp4")) {
+            clipPath = cleanSpec;
+          } else {
+            clipPath = `clips/${cleanSpec}.mp4`; // Assume mp4 extension if missing
+          }
         }
       }
+
+      const highlight = {
+        phrase,
+        start_word: startIndex,
+        end_word: correctEndIndex,
+        clip_path: clipPath,
+        music_path: null,
+        music_volume: 1.0,
+        occurrence: 1,
+      };
+
+      highlights.push(highlight);
+      addedCount++;
     });
 
     console.log(
@@ -1232,10 +888,8 @@ function applyAutoHighlightsFromMapping(customMappingData = null) {
 
     if (addedCount > 0) {
       updateHighlightsList();
-      if (typeof updateMusicHighlightsList === 'function') updateMusicHighlightsList();
-      if (typeof updateMusicHighlightsDisplay === 'function') updateMusicHighlightsDisplay();
       updatePreviewHighlights();
-      alert(`Success! Handled ${addedCount} highlights (Video & Audio). Check the lists.`);
+      alert(`Success! Handled ${addedCount} highlights. Check the list.`);
     } else {
       alert("Warning: No highlights were matched. Please check console logs for details.");
     }
@@ -2606,12 +2260,12 @@ async function processVideo() {
     const renderSubtitles = renderSubtitlesCheckbox ? renderSubtitlesCheckbox.checked : false;
     const ripAndRun = document.getElementById("rip-and-run-checkbox") ? document.getElementById("rip-and-run-checkbox").checked : false;
 
-    if (renderSubtitles && ripAndRun) {
-      alert("Please check ONLY ONE option: 'Render Subtitles' OR 'Rip & Run'. You cannot select both.");
-      processBtn.disabled = false;
-      processProgress.style.display = "none";
-      return;
-    }
+    // Removed the restriction - both can now be enabled together
+    // Logic will be handled by backend:
+    // - Both ON: Subtitles on entire video
+    // - Both OFF: No subtitles
+    // - Rip ON, Render OFF: Subtitles only on clips
+    // - Render ON, Rip OFF: Subtitles on entire video
 
     const response = await fetch("/process-video", {
       method: "POST",
@@ -2722,7 +2376,6 @@ if (typeof loadAssetLibrary === 'function') {
 
 
 // Zip Mapping Handler
-// Zip Mapping Handler
 async function handleZipMappingSelection(e) {
   const file = e.target.files[0];
   if (!file) {
@@ -2742,9 +2395,14 @@ async function handleZipMappingSelection(e) {
     if (data.success && data.files) {
       zipMappingFilename.innerText = `Loaded ${data.files.length} clips from zip.`;
 
-      // Helper to normalize text for comparison (remove punctuation, bad chars, lowercase)
       // handling "double spaces" and "garbage characters" by agressively stripping non-alnum
-      const normalize = (text) => normalizeTextToTokens(text).join(" ");
+      const normalize = (text) => {
+        return text.toLowerCase()
+          .replace(/['’]/g, '') // remove apostrophes (couldnt == couldn't)
+          .replace(/[^a-z0-9\s]/g, ' ') // replace special chars/punctuation with space
+          .replace(/\s+/g, ' ') // collapse spaces
+          .trim();
+      };
 
       // 1. Prepare Transcript for Searching
       // We build a single normalized string of the transcript to search sequences
@@ -2754,13 +2412,10 @@ async function handleZipMappingSelection(e) {
 
       if (typeof transcriptData !== 'undefined' && transcriptData && transcriptData.length) {
         transcriptData.forEach((item, index) => {
-          if (!item || !item.word) return; // Guard clause
-          const tokens = normalizeTextToTokens(item.word);
-          if (tokens.length) {
+          const norm = normalize(item.word);
+          if (norm) {
             transcriptWordsRaw.push(item.word);
-            tokens.forEach((token) => {
-              transcriptWordsNorm.push({ word: token, index: index });
-            });
+            transcriptWordsNorm.push({ word: norm, index: index });
           }
         });
       }
@@ -2793,10 +2448,8 @@ async function handleZipMappingSelection(e) {
         let searchPhrase = normalize(name);
 
         // Remove suffixes from the NORMALIZED string
-        searchPhrase = searchPhrase.replace(/find\s*the\s*clip/g, '');
-        searchPhrase = searchPhrase.replace(/find\s*clip/g, '');
-        searchPhrase = searchPhrase.replace(/findtheclip/g, '');
-        searchPhrase = searchPhrase.replace(/findclip/g, '');
+        searchPhrase = searchPhrase.replace(/find the clip/g, '');
+        searchPhrase = searchPhrase.replace(/find clip/g, '');
         searchPhrase = searchPhrase.replace(/\s+/g, ' ').trim();
 
         // 3. Robust Search in Transcript
@@ -2813,36 +2466,12 @@ async function handleZipMappingSelection(e) {
             if (startWordIndex === -1 && matchIdx + 1 < charIndexMap.length) startWordIndex = charIndexMap[matchIdx + 1];
             if (endWordIndex === -1 && matchIdx + searchPhrase.length - 2 >= 0) endWordIndex = charIndexMap[matchIdx + searchPhrase.length - 2];
 
-            // Detect type based on extension
-            const isAudio = /\.(mp3|wav|aac|m4a|flac|ogg)$/i.test(filename);
-            const prefix = isAudio ? "audio_files/" : "clips/";
-
             if (startWordIndex !== -1 && endWordIndex !== -1) {
               return {
                 segment: searchPhrase,
-                clip: prefix + filename,
+                clip: "clips/" + filename,
                 start_index: startWordIndex,
-                end_index: endWordIndex,
-                is_audio: isAudio
-              };
-            }
-          }
-
-          // Fuzzy token fallback (handles small typos like Dainely/Dainley)
-          const searchTokens = normalizeTextToTokens(searchPhrase);
-          if (searchTokens.length) {
-            const span = findTokenSpan(searchTokens, transcriptWordsNorm);
-            if (span) {
-              // Detect type based on extension
-              const isAudio = /\.(mp3|wav|aac|m4a|flac|ogg)$/i.test(filename);
-              const prefix = isAudio ? "audio_files/" : "clips/";
-
-              return {
-                segment: searchPhrase,
-                clip: prefix + filename,
-                start_index: transcriptWordsNorm[span.startIndex].index,
-                end_index: transcriptWordsNorm[span.endIndex].index,
-                is_audio: isAudio
+                end_index: endWordIndex
               };
             }
           }
@@ -2850,14 +2479,9 @@ async function handleZipMappingSelection(e) {
 
         // Fallback: just return clean name if not found (or transcript not loaded)
         // This likely won't highlight, but keeps the mapping logic valid
-        // Detect type based on extension
-        const isAudio = /\.(mp3|wav|aac|m4a|flac|ogg)$/i.test(filename);
-        const prefix = isAudio ? "audio_files/" : "clips/";
-
         return {
           segment: searchPhrase.length > 0 ? searchPhrase : name.trim(),
-          clip: prefix + filename,
-          is_audio: isAudio
+          clip: "clips/" + filename
         };
       }).filter(item => item.segment.length > 0);
 

@@ -1,28 +1,10 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd/
-.Python
-env/
-venv/
-.env
-.venv/
-.git/
-.gitignore
-.vscode/
-.idea/
-docker-compose.yml
-docker-run.ps1
-CLIENT_GUIDE.txt
-
-# Large data directories
-audio_files/
-clips/
+deploy.zip
+deploy.tar
 data/
 outputs/
 uploads/
-projects/
-jobs/
-
-# Local styling testing (if any)
-node_modules/
+__pycache__/
+.git/
+.venv/
+venv/
+*.pyc

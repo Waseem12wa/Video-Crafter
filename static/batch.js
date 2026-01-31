@@ -511,102 +511,20 @@
     section.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  const NUM_WORD_TO_DIGIT = {
-    zero: "0",
-    oh: "0",
-    o: "0",
-    one: "1",
-    two: "2",
-    three: "3",
-    four: "4",
-    five: "5",
-    six: "6",
-    seven: "7",
-    eight: "8",
-    nine: "9",
-    ten: "10",
-    eleven: "11",
-    twelve: "12",
-    thirteen: "13",
-    fourteen: "14",
-    fifteen: "15",
-    sixteen: "16",
-    seventeen: "17",
-    eighteen: "18",
-    nineteen: "19",
-    twenty: "20",
-    thirty: "30",
-    forty: "40",
-    fifty: "50",
-    sixty: "60",
-    seventy: "70",
-    eighty: "80",
-    ninety: "90",
-  };
-
-  const CONTRACTION_EXPANSIONS = {
-    im: ["i", "am"],
-    ive: ["i", "have"],
-    id: ["i", "would"],
-    youre: ["you", "are"],
-    youve: ["you", "have"],
-    theyre: ["they", "are"],
-    theyve: ["they", "have"],
-    weve: ["we", "have"],
-    cant: ["can", "not"],
-    cannot: ["can", "not"],
-    wont: ["will", "not"],
-    dont: ["do", "not"],
-    doesnt: ["does", "not"],
-    didnt: ["did", "not"],
-    isnt: ["is", "not"],
-    arent: ["are", "not"],
-    wasnt: ["was", "not"],
-    werent: ["were", "not"],
-    havent: ["have", "not"],
-    hasnt: ["has", "not"],
-    hadnt: ["had", "not"],
-    shouldnt: ["should", "not"],
-    wouldnt: ["would", "not"],
-    couldnt: ["could", "not"],
-    mustnt: ["must", "not"],
-  };
-
-  function normalizeTokenBase(token) {
-    if (!token) return "";
-    return token
-      .toLowerCase()
-      .replace(/[’']/g, "")
-      .replace(/[^a-z0-9]+/gi, "");
-  }
-
-  function expandNormalizedToken(token) {
-    if (!token) return [];
-    const expanded = CONTRACTION_EXPANSIONS[token] || [token];
-    return expanded.map((t) => NUM_WORD_TO_DIGIT[t] || t);
-  }
-
-  function normalizeTextToTokens(text) {
-    if (!text) return [];
-    return text
-      .replace("\ufeff", "")
-      .toLowerCase()
-      .replace(/[’']/g, "")
-      .replace(/[^a-z0-9]+/gi, " ")
-      .trim()
-      .split(/\s+/)
-      .flatMap((token) => expandNormalizedToken(normalizeTokenBase(token)))
-      .filter(Boolean);
-  }
-
   function normalizeWordToken(token) {
-    const base = normalizeTokenBase(token);
-    return NUM_WORD_TO_DIGIT[base] || base;
+    if (!token) return "";
+    return token.toLowerCase().replace(/[^a-z0-9]+/gi, "");
   }
 
   function normalizeSegment(text) {
     if (!text) return "";
-    return normalizeTextToTokens(text).join(" ");
+    return text
+      .replace("\ufeff", "")
+      .toLowerCase()
+      .split(/\s+/)
+      .map((token) => normalizeWordToken(token))
+      .filter(Boolean)
+      .join(" ");
   }
 
   function parseMappingText(rawText) {
@@ -751,13 +669,7 @@
       return { highlights: [], matched: 0, unmatched: 0 };
     }
 
-    const transcriptDocs = [];
-    transcriptDataLocal.forEach((w, index) => {
-      const tokens = normalizeTextToTokens(w.word);
-      tokens.forEach((token) => {
-        transcriptDocs.push({ token, index });
-      });
-    });
+    const transcriptTokens = transcriptDataLocal.map((w) => normalizeWordToken(w.word));
 
     /** @type {Array<any>} */
     const highlightsOut = [];
@@ -774,10 +686,10 @@
       if (!segLen) continue;
 
       let startIndex = -1;
-      for (let i = 0; i <= transcriptDocs.length - segLen; i++) {
+      for (let i = 0; i <= transcriptTokens.length - segLen; i++) {
         let ok = true;
         for (let j = 0; j < segLen; j++) {
-          if (transcriptDocs[i + j].token !== segmentTokens[j]) {
+          if (transcriptTokens[i + j] !== segmentTokens[j]) {
             ok = false;
             break;
           }
@@ -794,10 +706,8 @@
       }
 
       const endIndex = startIndex + segLen - 1;
-      const startWordIndex = transcriptDocs[startIndex].index;
-      const endWordIndex = transcriptDocs[endIndex].index;
       const phrase = transcriptDataLocal
-        .slice(startWordIndex, endWordIndex + 1)
+        .slice(startIndex, endIndex + 1)
         .map((w) => w.word)
         .join(" ");
 
@@ -805,8 +715,8 @@
 
       highlightsOut.push({
         phrase,
-        start_word: startWordIndex,
-        end_word: endWordIndex,
+        start_word: startIndex,
+        end_word: endIndex,
         clip_path: clipPath,
         music_path: null,
         music_volume: 1.0,

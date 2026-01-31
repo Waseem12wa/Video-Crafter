@@ -1,50 +1,3 @@
-
-from typing import List
-from video_overlay_script import transcribe_audio_whisperx
-
-# =============================================================================
-# Robust Subtitle/Audio Alignment System
-# =============================================================================
-
-def build_subtitle_sentences_with_whisperx(audio_path: str, lines: List[str], model_size: str = "base", language: str = "en") -> tuple[List[dict], List[dict]]:
-    """
-    Build subtitle sentences using WhisperX for robust, waveform-aligned timing.
-    Args:
-        audio_path: Path to the audio file.
-        lines: List of subtitle lines (sentences).
-        model_size: WhisperX model size (default: "base").
-        language: Language code (default: "en").
-    Returns:
-        Tuple of (transcript, subtitles) with accurate timing.
-    """
-    # Get word-level transcript with precise timings
-    transcript = transcribe_audio_whisperx(audio_path, model_size, language)
-    subtitles = []
-    word_idx = 0
-    for line in lines:
-        tokens = [tok for tok in line.split() if tok]
-        if not tokens:
-            continue
-        start_word = word_idx
-        end_word = word_idx + len(tokens) - 1
-        # Find start/end time from transcript
-        if end_word < len(transcript):
-            start_time = transcript[start_word]["start_time"]
-            end_time = transcript[end_word]["end_time"]
-        else:
-            # Fallback: use last available word
-            start_time = transcript[start_word]["start_time"] if start_word < len(transcript) else 0.0
-            end_time = transcript[-1]["end_time"] if transcript else 0.0
-        subtitles.append({
-            "text": line,
-            "start_word": start_word,
-            "end_word": end_word,
-            "word_count": len(tokens),
-            "start_time": start_time,
-            "end_time": end_time,
-        })
-        word_idx += len(tokens)
-    return transcript, subtitles
 """
 Subtitle Design 1 - Default Design
 This is the current default subtitle design.
@@ -52,7 +5,6 @@ Also contains subtitle processing functions.
 """
 
 from video_overlay_script import SubtitleSentence, SubtitleDesign
-from typing import List
 import cv2
 import logging
 from typing import List, Dict, Any
@@ -66,9 +18,44 @@ logger = logging.getLogger(__name__)
 
 def build_subtitle_sentences_from_lines(lines: List[str], default_word_duration: float = 0.5) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    This function is deprecated and will be replaced by a robust alignment system.
+    Build subtitle sentences from text lines.
+    
+    Args:
+        lines: List of text lines to convert to subtitles
+        default_word_duration: Duration for each word in seconds (default: 0.5)
+    
+    Returns:
+        Tuple of (transcript, subtitles) where:
+        - transcript: List of word dictionaries with timing information
+        - subtitles: List of subtitle sentence dictionaries
     """
-    raise NotImplementedError("This function is deprecated. Use the new robust alignment system.")
+    transcript = []
+    subtitles = []
+    word_cursor = 0
+
+    for line in lines:
+        tokens = [tok for tok in line.split() if tok]
+        if not tokens:
+            continue
+
+        start_word = word_cursor
+        for idx, tok in enumerate(tokens):
+            t0 = (word_cursor + idx) * default_word_duration
+            t1 = t0 + default_word_duration
+            transcript.append({"word": tok, "start_time": t0, "end_time": t1})
+        word_cursor += len(tokens)
+        end_word = word_cursor - 1
+
+        subtitles.append(
+            {
+                "text": line,
+                "start_word": start_word,
+                "end_word": end_word,
+                "word_count": len(tokens),
+            }
+        )
+
+    return transcript, subtitles
 
 
 def build_subtitle_sentences_from_dict(subtitle_sentences: List[Any], is_dummy_transcript: bool = False) -> List[SubtitleSentence]:

@@ -27,7 +27,7 @@ services:
     image: video-editor:latest
 
     ports:
-      - "5001:5000"
+      - "9090:5000"
 
     volumes:
       # Persistent data directories

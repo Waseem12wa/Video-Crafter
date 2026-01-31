@@ -15,13 +15,6 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence, Tuple
 
-# Import torch at module level to avoid "referenced before assignment" errors
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    torch = None
 
 # Configure logging
 logging.basicConfig(
@@ -990,12 +983,6 @@ def build_overlay_schedule_times(
                 schedule_times[i] = (float(st_i), float(st_n), int(idx_i))
                 segment_on_durations_sec[int(idx_i)] = max(0.0, float(st_n) - float(st_i))
 
-    # DEBUG: Log the overlay schedule
-    if logger:
-        logger.info(f"[SCHED] Generated {len(schedule_times)} overlay segments:")
-        for i, (st, et, seg_idx) in enumerate(schedule_times):
-            logger.info(f"  [SCHED] Gap {i}: seg={seg_idx} start={st:.3f} end={et:.3f} dur={segment_on_durations_sec[seg_idx]:.3f}")
-
     return schedule_times, highlight_subtitle_indices, highlight_subtitle_spans, segment_on_durations_sec
 
 
@@ -1057,13 +1044,6 @@ def transcribe_audio_whisper(
                     "end_time": float(word_data["end"]),
                 }
             )
-    
-    # Critical: Free memory after transcription
-    del model
-    import gc
-    gc.collect()
-    logger.info("  [TRANSCRIPT] Memory cleaned up after Whisper processing.")
-    
     return transcript
 
 def transcribe_audio_whisperx(
@@ -1173,17 +1153,6 @@ def transcribe_audio_whisperx(
     logger.info(
         f"  [TRANSCRIPT] WhisperX produced {len(transcript)} waveform-aligned words."
     )
-    
-    # Critical: Free memory after transcription
-    del model
-    del align_model
-    del audio
-    if device == "cuda" and TORCH_AVAILABLE:
-        torch.cuda.empty_cache()
-    import gc
-    gc.collect()
-    logger.info("  [TRANSCRIPT] Memory cleaned up after WhisperX processing.")
-    
     return transcript
 
 def build_transcript(
@@ -1282,27 +1251,6 @@ def build_transcript(
             raise RuntimeError("Whisper returned an empty transcript; cannot proceed.")
     except Exception as exc:
         logger.error(f"  [TRANSCRIPT] ✗ Whisper transcription failed: {exc}")
-        # Final fallback: even spacing if a transcript text was provided
-        if transcript_text:
-            try:
-                cap = cv2.VideoCapture(video_path)
-                fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-                cap.release()
-                duration = (frame_count / fps) if fps > 0 else 0.0
-                if duration <= 0:
-                    duration = ffprobe_duration_seconds(video_path) or 0.0
-            except Exception:
-                duration = 0.0
-
-            if duration > 0:
-                transcript = evenly_spaced_transcript(transcript_text, duration)
-                write_subtitle_into_file(video_path, transcript)
-                logger.info(
-                    f"  [TRANSCRIPT] Using provided transcript text with even spacing ({len(transcript)} words, duration={duration:.2f}s)."
-                )
-                return transcript
-
         raise RuntimeError(
             "Both WhisperX (if available) and Whisper transcription failed. "
             "Ensure the models are installed and the video audio is accessible."
@@ -1833,35 +1781,6 @@ _NUM_WORD_TO_DIGIT = {
     "twenty":"20","thirty":"30","forty":"40","fifty":"50","sixty":"60","seventy":"70","eighty":"80","ninety":"90",
 }
 
-_PM_CONTRACTION_EXPANSIONS = {
-    # common contractions after normalise_word (apostrophes removed)
-    "im": ["i", "am"],
-    "ive": ["i", "have"],
-    "id": ["i", "would"],
-    "youre": ["you", "are"],
-    "youve": ["you", "have"],
-    "theyre": ["they", "are"],
-    "theyve": ["they", "have"],
-    "weve": ["we", "have"],
-    "cant": ["can", "not"],
-    "cannot": ["can", "not"],
-    "wont": ["will", "not"],
-    "dont": ["do", "not"],
-    "doesnt": ["does", "not"],
-    "didnt": ["did", "not"],
-    "isnt": ["is", "not"],
-    "arent": ["are", "not"],
-    "wasnt": ["was", "not"],
-    "werent": ["were", "not"],
-    "havent": ["have", "not"],
-    "hasnt": ["has", "not"],
-    "hadnt": ["had", "not"],
-    "shouldnt": ["should", "not"],
-    "wouldnt": ["would", "not"],
-    "couldnt": ["could", "not"],
-    "mustnt": ["must", "not"],
-}
-
 _ALNUM_SPLIT_RE = re.compile(r"[a-z]+|\d+", re.I)
 _HYPHENS_RE = re.compile(r"[-–—]+")
 
@@ -1891,17 +1810,6 @@ def _pm_split_alnum(token: str) -> List[str]:
 
 def _pm_canon_single(tok: str) -> str:
     return _NUM_WORD_TO_DIGIT.get(tok.lower(), tok.lower())
-
-
-def _pm_expand_contractions(tokens: List[str]) -> List[str]:
-    out: List[str] = []
-    for t in tokens:
-        exp = _PM_CONTRACTION_EXPANSIONS.get(t)
-        if exp:
-            out.extend(exp)
-        else:
-            out.append(t)
-    return out
 
 
 def _pm_stem(tok: str) -> str:
@@ -2070,17 +1978,8 @@ def build_transcript_index(transcript_words: Sequence[str]) -> TranscriptIndex:
         parts = _pm_split_alnum(w)  # "3step" -> ["3","step"]
         if not parts:
             continue
-        expanded_parts: List[str] = []
         for p in parts:
-            p = _pm_canon_single(p)
-            exp = _PM_CONTRACTION_EXPANSIONS.get(p)
-            if exp:
-                expanded_parts.extend(exp)
-            else:
-                expanded_parts.append(p)
-
-        for p in expanded_parts:
-            expanded_tokens.append(p)
+            expanded_tokens.append(_pm_canon_single(p))
             token_to_word.append(wi)
 
     expanded_tokens, token_to_word = _pm_canon_seq(expanded_tokens, token_to_word)
@@ -2103,7 +2002,6 @@ def _pm_phrase_to_tokens(phrase: str) -> List[str]:
         expanded.extend(parts if parts else [t])
 
     expanded = [_pm_canon_single(t) for t in expanded]
-    expanded = _pm_expand_contractions(expanded)
     expanded, _ = _pm_canon_seq(expanded, None)
     return expanded
 
@@ -2466,14 +2364,6 @@ def map_assignments_to_segments(
             return 70
         return max(90, min(240, n_tokens * 6))
 
-    def _hint_start_guess(hint_index: Optional[int]) -> Optional[int]:
-        if hint_index is None:
-            return None
-        # FIX: Do not assume scaling based on max_hint_index, as it only represents
-        # the last highlighted word, not the transcript end. partial highlights
-        # caused massive over-scaling. Default to identity mapping check.
-        return int(hint_index)
-
     def _safe_int(value: Optional[object]) -> Optional[int]:
         try:
             return int(value)
@@ -2501,9 +2391,7 @@ def map_assignments_to_segments(
 
         if max_hint_index is not None and max_hint_index > 0:
             points.append((0, 0))
-            # FIX: Do NOT anchor the last highlight to the end of the transcript.
-            # This causes massive distortion if the user only highlighted the first half.
-            # points.append((max_hint_index, last_idx))
+            points.append((max_hint_index, last_idx))
 
         if not points:
             return None
@@ -2649,15 +2537,11 @@ def map_assignments_to_segments(
         # Try to find phrase match first
         if phrase_text and len(phrase_text) > 2:
             try:
-                hint_start = _hint_start_guess(start_word_hint)
-                start_index = search_start
-                if hint_start is not None:
-                    start_index = max(search_start, max(0, hint_start - 16))
                 resolved = find_phrase_indices_windowed(
                     transcript_index,
                     phrase_text,
                     occurrence=assignment.occurrence,
-                    start_index=start_index,
+                    start_index=search_start,
                     backtrack_words=16,
                     lookahead_words=_lookahead_for_phrase(phrase_text),
                 )
@@ -2665,15 +2549,11 @@ def map_assignments_to_segments(
                 resolved = None
                 for backtrack_words, min_lookahead in ((32, 220), (48, 320)):
                     try:
-                        hint_start = _hint_start_guess(start_word_hint)
-                        start_index = search_start
-                        if hint_start is not None:
-                            start_index = max(search_start, max(0, hint_start - backtrack_words))
                         resolved = find_phrase_indices_windowed(
                             transcript_index,
                             phrase_text,
                             occurrence=assignment.occurrence,
-                            start_index=start_index,
+                            start_index=search_start,
                             backtrack_words=backtrack_words,
                             lookahead_words=max(_lookahead_for_phrase(phrase_text), min_lookahead),
                         )
@@ -2684,30 +2564,35 @@ def map_assignments_to_segments(
                 if resolved is None:
                     failure_reasons[idx] = exc
 
-        # If no phrase match and hints are from a different transcript length,
-        # defer mapping so we can scale hints later (Pass 2).
-        if (
-            resolved is None
-            and start_word_hint is not None
-            and end_word_hint is not None
-            and max_hint_index is not None
-            and int(max_hint_index) == last_idx
-        ):
+        # If no phrase match, but we have explicit hints (manual highlight), use hints
+        if resolved is None and start_word_hint is not None and end_word_hint is not None:
+            # Just map the hint directly if we can't find the phrase
+            # This assumes the transcript hasn't drifted too much, or the caller
+            # provided a matching transcript.
             mapped_start = _safe_int(start_word_hint)
             mapped_end = _safe_int(end_word_hint)
-
+            
             if mapped_start is not None and mapped_end is not None:
+                # Sanity checks
+                if max_hint_index is not None and mapped_start > max_hint_index:
+                    # Index is out of bounds of the original hint space?
+                    # Actually start_word_hint IS the index.
+                    pass
+                
+                # Use the hint directly
                 start_t_idx = mapped_start
+                # Determine length from hint or phrase
                 if mapped_end is not None:
                     length = max(1, mapped_end - mapped_start + 1)
                 else:
                     length = _phrase_token_count(phrase_text)
-
+                
+                # Ensure the mapped indices are within transcript bounds
                 start_t_idx = max(0, min(start_t_idx, last_idx))
                 end_t_idx = max(0, min(start_t_idx + length - 1, last_idx))
                 if end_t_idx < start_t_idx:
                     end_t_idx = start_t_idx
-
+                
                 resolved = (start_t_idx, end_t_idx)
                 logger.info(
                     "[MAP] Using explicit indices for clip=%s phrase=%r -> words[%d:%d]",
@@ -2827,11 +2712,17 @@ def map_assignments_to_segments(
                     repaired = (start_word, end_word)
                     used_monotonic_fallback = True
                 else:
+                    # Don't skip - use a fallback monotonic span even without phrase/indices
+                    # This ensures ALL clips are added to the output, even if phrases don't match
                     logger.warning(
-                        "[MAP] Skipping assignment with no phrase/indices for clip=%s",
+                        "[MAP] Assignment has no phrase/indices; using monotonic fallback for clip=%s",
                         getattr(assignment, "clip_path", None),
                     )
-                    continue
+                    fallback_start = min(max(int(search_start), 0), last_idx)
+                    fallback_end = min(fallback_start + 5, last_idx)  # 5-word span by default
+                    start_word, end_word = fallback_start, fallback_end
+                    repaired = (start_word, end_word)
+                    used_monotonic_fallback = True
 
             if phrase_text and not used_monotonic_fallback:
                 logger.warning(
@@ -3092,12 +2983,6 @@ def map_assignments_to_segments(
             str(seg.get("clip_path") or ""),
         )
     )
-    # DEBUG: Log the mapped segments
-    if logger:
-        logger.info(f"[MAP] Mapped {len(mapped)} segments:")
-        for i, seg in enumerate(mapped):
-            logger.info(f"  [MAP] Seg {i}: start={seg.get('start_word')} end={seg.get('end_word')} clip={seg.get('clip_path')}")
-
     return mapped
 
 
@@ -3649,12 +3534,7 @@ def draw_subtitle_on_frame(
         space_width = cv2.getTextSize(
             " ", design.font, effective_text_scale, thickness_for_measure
         )[0][0]
-    padding_x = int(effective_margin_x)
-    padding_y = int(effective_margin_y)
-    max_line_width = max(
-        1,
-        min(int(width * design.max_line_width_ratio), width - (2 * padding_x)),
-    )
+    max_line_width = max(1, int(width * design.max_line_width_ratio))
 
     def compute_line_width(word_list: List[Dict[str, object]]) -> int:
         width_acc = 0
@@ -3932,7 +3812,7 @@ def draw_subtitle_on_frame(
             top_line = y_cursor
             baseline_y = int(top_line + line_ascent)
             line_width = line["width"]
-            x_cursor = max(padding_x, int((width - line_width) / 2))
+            x_cursor = int((width - line_width) / 2)
             for word_position, word_info in enumerate(words):
                 if word_position > 0:
                     x_cursor += space_width
@@ -4243,43 +4123,6 @@ def _process_video_with_overlays_legacy(
                     f"  [CLIP] {clip_path}: target_duration={target_duration:.3f}s (<= 0) -> using clip as-is (no slowdown)."
                 )
                 processed_clips[clip_path] = clip_path
-            # FINAL FALLBACK: If still not resolved, use difflib to find the closest transcript window
-            if resolved is None and phrase_text:
-                from difflib import SequenceMatcher
-                norm_phrase = " ".join([normalise_word(tok) for tok in phrase_text.split() if normalise_word(tok)])
-                best_ratio = 0.0
-                best_start = None
-                best_end = None
-                window_size = max(1, len(norm_phrase.split()))
-                for i in range(0, len(normalised_transcript) - window_size + 1):
-                    window = normalised_transcript[i:i+window_size]
-                    window_str = " ".join(window)
-                    ratio = SequenceMatcher(None, norm_phrase, window_str).ratio()
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_start = i
-                        best_end = i + window_size - 1
-                # Accept if ratio is reasonably high (tunable threshold)
-                if best_ratio > 0.55 and best_start is not None and best_end is not None:
-                    resolved = (best_start, best_end)
-                    logger.warning(
-                        "[MAP][FALLBACK][DIFFLIB] Used difflib fallback for clip=%s phrase=%r -> words[%d:%d] (ratio=%.2f)",
-                        getattr(assignment, "clip_path", None),
-                        phrase_text,
-                        best_start,
-                        best_end,
-                        best_ratio,
-                    )
-                else:
-                    # Log the closest match for debugging
-                    logger.error(
-                        "[MAP][UNMATCHED] Could not match clip=%s phrase=%r (normalized=%r). Closest window: '%s' (ratio=%.2f)",
-                        getattr(assignment, "clip_path", None),
-                        phrase_text,
-                        norm_phrase,
-                        " ".join(normalised_transcript[best_start:best_end+1]) if best_start is not None and best_end is not None else "",
-                        best_ratio,
-                    )
             else:
                 # Measure original clip duration with OpenCV
                 tmp_cap = cv2.VideoCapture(clip_path)
@@ -5002,8 +4845,6 @@ def process_video_with_overlays(
     aspect_ratio: str = "4:5",
     render_subtitles: bool = True,
     rip_and_run: bool = False,
-    overlay_schedule_times: Optional[list] = None,
-    segment_on_durations_sec: Optional[list] = None,
 ) -> None:
     """Stream through the video, overlay clips, and draw subtitles."""
     step_start = time.time()
@@ -5052,26 +4893,21 @@ def process_video_with_overlays(
         source_width, source_height, target_aspect_ratio
     )
 
-    if overlay_schedule_times is None or segment_on_durations_sec is None:
-        (
-            overlay_schedule_times_new,
-            _highlight_subtitle_indices,
-            _highlight_subtitle_spans,
-            segment_on_durations_sec_new,
-        ) = build_overlay_schedule_times(
-            transcript=transcript,
-            highlight_segments=highlight_segments,
-            subtitle_segments=subtitle_segments,
-            cluster_gap_seconds=None,
-            lead_in_seconds=0.15,
-            tail_out_seconds=0.28,
-            use_subtitle_bounds_for_overlay=False,
-            logger=logger,
-        )
-        if overlay_schedule_times is None:
-            overlay_schedule_times = overlay_schedule_times_new
-        if segment_on_durations_sec is None:
-            segment_on_durations_sec = segment_on_durations_sec_new
+    (
+        overlay_schedule_times,
+        _highlight_subtitle_indices,
+        _highlight_subtitle_spans,
+        segment_on_durations_sec,
+    ) = build_overlay_schedule_times(
+        transcript=transcript,
+        highlight_segments=highlight_segments,
+        subtitle_segments=subtitle_segments,
+        cluster_gap_seconds=None,
+        lead_in_seconds=0.15,
+        tail_out_seconds=0.28,
+        use_subtitle_bounds_for_overlay=False,
+        logger=logger,
+    )
 
     logger.info(
         f"  [VIDEO PROCESSING] Video info: {source_width}x{source_height} @ {fps:.2f}fps, {video_duration:.2f}s duration"
@@ -5116,10 +4952,8 @@ def process_video_with_overlays(
         if not os.path.exists(clip_path):
             raise FileNotFoundError(f"Overlay clip not found: {clip_path}")
 
-
         if clip_path not in processed_clips:
             target_duration = clip_target_durations.get(clip_path, 0.0)
-            logger.info(f"[DEBUG][SYNC] Segment {idx}: clip_path={clip_path}, target_duration={target_duration:.3f}s")
 
             # If we don't have a positive target duration, just reuse the clip as-is.
             if target_duration <= 0.0:
@@ -5148,8 +4982,6 @@ def process_video_with_overlays(
                     extra_margin = 0.30  # seconds; tweak if ever needed
                     required_duration = float(target_duration) + extra_margin
 
-                    logger.info(f"[DEBUG][SYNC] Segment {idx}: orig_clip_duration={clip_duration:.3f}s, required_duration={required_duration:.3f}s")
-
                     if clip_duration >= required_duration:
                         logger.info(
                             f"  [CLIP] {clip_path}: orig_dur={clip_duration:.3f}s, "
@@ -5165,7 +4997,6 @@ def process_video_with_overlays(
                             f"required={required_duration:.3f}s -> "
                             f"slowing down (speed_factor={speed_factor:.4f})."
                         )
-                        logger.info(f"[DEBUG][SYNC] Segment {idx}: speed_factor={speed_factor:.4f}")
 
                         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                         tmp_path = tmp_file.name
@@ -5212,9 +5043,6 @@ def process_video_with_overlays(
     OVERLAY_FADE_SECONDS = 0.07
 
     logger.info("  [SCHED] Overlay schedule (time-based, run-aware):")
-    logger.info(f"  [SCHED] Total scheduled segments: {len(overlay_schedule_times)}")
-    for i, (st, et, idx) in enumerate(overlay_schedule_times):
-        logger.info(f"  [SCHED] Item {i}: {st:.3f}-{et:.3f}s (Segment Index {idx})")
 
     # Build per-segment timing so we can fade safely without “bleeding”.
     seg_timing: Dict[int, OverlayTiming] = {}
@@ -5422,23 +5250,24 @@ def process_video_with_overlays(
 
         # Draw subtitles on this frame (if enabled)
         # Logic: 
-        # 1. If render_subtitles is False -> NO subtitles ever.
-        # 2. If render_subtitles is True:
-        #    a. If rip_and_run is False -> Subtitles everywhere (default).
-        #    b. If rip_and_run is True  -> Subtitles ONLY if active_overlay_index is not None.
+        # 1. Both OFF -> NO subtitles
+        # 2. Both ON (render_subtitles=True AND rip_and_run=True) -> Subtitles on entire video
+        # 3. Render ON, Rip OFF -> Subtitles on entire video  
+        # 4. Rip ON, Render OFF -> Subtitles ONLY on B-roll clips (when active_overlay_index is not None)
         
         frame_with_subtitles = frame
         should_render = False
 
-        if rip_and_run:
-             # Mode: Rip & Run -> Subtitles ONLY on B-roll clips
-             if active_overlay_index is not None:
-                 should_render = True
-        elif render_subtitles:
-             # Mode: Render Subtitles -> Subtitles on entire video
-             should_render = True
-        # else: Both False -> should_render remains False
+        if render_subtitles:
+            # If render_subtitles is ON, always show subtitles (ignores rip_and_run)
+            should_render = True
+        elif rip_and_run:
+            # If only rip_and_run is ON (render_subtitles is OFF), show subtitles only on clips
+            if active_overlay_index is not None:
+                should_render = True
+        # else: both are OFF, don't render
         
+
         if should_render:
             frame_with_subtitles = draw_subtitle_on_frame(
                 frame,
@@ -5449,8 +5278,15 @@ def process_video_with_overlays(
                 subtitle_segments=subtitle_segments,
                 custom_subtitles=custom_subtitles,
             )
+
+        # Force resize to match writer dimensions exactly
+        # This prevents "Failed to write frame" errors if crop/resize logic was off by 1 pixel
+        if frame_with_subtitles.shape[1] != width or frame_with_subtitles.shape[0] != height:
+             frame_with_subtitles = cv2.resize(frame_with_subtitles, (width, height))
+
         writer.write(frame_with_subtitles)
         frame_index += 1
+
 
     cap.release()
     for clip_info in clip_state.values():
@@ -5971,30 +5807,9 @@ def render_project(config: ProjectConfig) -> Dict[str, object]:
     # Step 2: Map highlights
     step_start = time.time()
     logger.info("[STEP 2/4] Mapping highlight segments...")
-    # In Rip and Run mode, remove lead-in/tail-out delay for perfect sync
-    if config.rip_and_run:
-        highlight_segments = map_assignments_to_segments(
-            transcript, config.highlight_assignments
-        )
-        schedule_times, highlight_subtitle_indices, highlight_subtitle_spans, segment_on_durations_sec = build_overlay_schedule_times(
-            highlight_segments,
-            transcript,
-            subtitle_segments=None,
-            use_subtitle_bounds_for_overlay=False,
-            cluster_gap_seconds=None,
-            lead_in_seconds=0.0,
-            tail_out_seconds=0.0,
-            logger=logger,
-        )
-    else:
-        highlight_segments = map_assignments_to_segments(
-            transcript, config.highlight_assignments
-        )
-        schedule_times, highlight_subtitle_indices, highlight_subtitle_spans, segment_on_durations_sec = build_overlay_schedule_times(
-            highlight_segments,
-            transcript,
-            logger=logger,
-        )
+    highlight_segments = map_assignments_to_segments(
+        transcript, config.highlight_assignments
+    )
     step_duration = time.time() - step_start
     logger.info(f"[STEP 2/4] ✓ Highlight segments mapped in {step_duration:.2f}s ({len(highlight_segments)} segments)")
 
@@ -6010,24 +5825,7 @@ def render_project(config: ProjectConfig) -> Dict[str, object]:
     subtitle_segments = config.subtitle_segments
     custom_subtitle_texts: Optional[List[str]] = None
 
-    if config.rip_and_run:
-        # In Rip & Run mode, subtitles should match highlight segments exactly
-        # and subtitle timings should match overlay schedule times for perfect sync
-        subtitle_segments = []
-        for i, seg in enumerate(highlight_segments):
-            # Use the exact schedule_times for subtitle display
-            st, et, seg_idx = schedule_times[i]
-            # Find the closest transcript word indices for these times
-            sw = int(seg["start_word"])
-            ew = int(seg["end_word"])
-            # Optionally, you could map st/et to transcript indices, but using the highlight segment indices is usually correct
-            subtitle_segments.append((sw, ew))
-        custom_subtitle_texts = [
-            getattr(seg, "phrase", None) or "" for seg in config.highlight_assignments
-        ]
-        # Pass schedule_times to process_video_with_overlays for subtitle timing
-        # (the function already receives overlay_schedule_times)
-    elif config.subtitle_sentences:
+    if config.subtitle_sentences:
         mapped_sentences = map_subtitle_sentences(
             transcript, config.subtitle_sentences
         )
@@ -6123,8 +5921,6 @@ def render_project(config: ProjectConfig) -> Dict[str, object]:
         aspect_ratio=config.aspect_ratio or "4:5",
         render_subtitles=config.render_subtitles,
         rip_and_run=config.rip_and_run,
-        overlay_schedule_times=schedule_times,
-        segment_on_durations_sec=segment_on_durations_sec,
     )
     step_duration = time.time() - step_start
     logger.info(f"[STEP 3/4] ✓ Video processed in {step_duration:.2f}s")

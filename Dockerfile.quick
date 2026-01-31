@@ -1,0 +1,12 @@
+FROM waseemzahid48/videocrafter-app:latest
+
+WORKDIR /app
+
+# Copy updated code
+COPY . .
+
+# Install only gunicorn (fast)
+RUN pip install --no-cache-dir gunicorn==21.2.0
+
+# Update the command to use gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "3600", "--workers", "2", "app:app"]
